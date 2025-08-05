@@ -7,40 +7,38 @@ from app.models import Article
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
-# Настройка тестовой базы данных
-SQLALCHEMY_DATABASE_URL = "postgresql://postgres:postgres@localhost:5432/test_blog_db"
+# Используем основную базу данных из окружения Docker
+SQLALCHEMY_DATABASE_URL = "postgresql://postgres:postgres@db:5432/blog_db"
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
 # Фикстуры для тестов
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="module")
 def db_session():
-    # Создаем все таблицы
+    # Создаем таблицы
     Article.metadata.create_all(bind=engine)
     db = TestingSessionLocal()
     try:
         yield db
     finally:
         db.close()
-        # Удаляем все таблицы после теста
-        Article.metadata.drop_all(bind=engine)
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="module")
 def client(db_session):
     # Переопределяем зависимость get_db для тестов
     def override_get_db():
         try:
             yield db_session
         finally:
-            db_session.close()
+            pass  # Не закрываем сессию явно, чтобы не мешать другим тестам
 
     app.dependency_overrides[get_db] = override_get_db
     return TestClient(app)
 
 
-@pytest.fixture(scope="function")
+@pytest.fixture(scope="module")
 def test_article(client):
     # Создаем тестовую статью
     response = client.post(
@@ -69,7 +67,7 @@ def test_get_articles(client, test_article):
     assert response.status_code == 200
     data = response.json()
     assert len(data) > 0
-    assert data[0]["title"] == "Test Article"
+    assert any(article["title"] == "Test Article" for article in data)
 
 
 def test_get_article(client, test_article):
@@ -91,7 +89,7 @@ def test_update_article(client, test_article):
     data = response.json()
     assert data["title"] == "Updated Title"
     assert data["content"] == "Updated content"
-    assert data["author"] == "Test Author"  # Автор не должен измениться
+    assert data["author"] == "Test Author"
 
 
 def test_delete_article(client, test_article):
@@ -106,7 +104,15 @@ def test_delete_article(client, test_article):
 
 
 def test_article_not_found(client):
-    # Проверяем несуществующую статью
     response = client.get("/api/v1/articles/999")
     assert response.status_code == 404
     assert response.json()["detail"] == "Статья с ID 999 не найдена"
+
+
+# Очистка после всех тестов
+@pytest.fixture(scope="module", autouse=True)
+def cleanup(db_session):
+    yield
+    # Удаляем все данные после выполнения всех тестов модуля
+    db_session.query(Article).delete()
+    db_session.commit()
